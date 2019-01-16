@@ -152,7 +152,7 @@ class SpecialOAuth2Client extends SpecialPage {
 		$username = JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['username']);
 		$email =  JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['email']);
 
-		$allowed_domains = ( isset( $wgOAuth2Client['configuration']['domain_whitelist'] ) ? $wgOAuth2Client['configuration']['domain_whitelist'] : null );
+		$allowed_domains = ( isset( $wgOAuth2Client['configuration']['allowed_domains'] ) ? $wgOAuth2Client['configuration']['allowed_domains'] : null );
 		if ( sizeof( $allowed_domains ) > 0 ) {
 						// Domain whitelist configured, make sure the requesting user is one of the provided domains.
 						$domain_name = substr( strrchr( $email, '@' ), 1);
