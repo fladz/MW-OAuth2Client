@@ -117,6 +117,12 @@ class SpecialOAuth2Client extends SpecialPage {
 
 		$resourceOwner = $this->_provider->getResourceOwner($accessToken);
 		$user = $this->_userHandling( $resourceOwner->toArray() );
+		if ( is_null( $user ) ) {
+			global $wgOut;
+			$wgOut->redirect( Title::newMainPage()->getFullURL() );
+			return false;
+		}
+
 		$user->setCookies();
 
 		global $wgOut, $wgRequest;
@@ -176,7 +182,18 @@ class SpecialOAuth2Client extends SpecialPage {
 
 		$username = JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['username']);
 		$email =  JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['email']);
-		Hooks::run("OAuth2ClientBeforeUserSave", [&$username, &$email, $response]);
+		$allowed_domains = ( isset( $wgOAuth2Client['configuration']['allowed_domains'] ) ? $wgOAuth2Client['configuration']['allowed_domains'] : null );
+
+		if ( $allowed_domains != NULL &&  sizeof( $allowed_domains ) > 0 ) {
+			// Domain whitelist configured, make sure the requesting user is one of the provided domains.
+			$domain_name = substr( strrchr( $email, '@' ), 1);
+			if ( !in_array( $domain_name, $allowed_domains ) ) {
+				// Valid account, but not whitelisted.
+				return null;
+			}
+		}
+		Hooks::run('OAuth2ClientBeforeUserSave', [&$username, &$email, $response]);
+
 		$user = User::newFromName($username, 'creatable');
 		if (!$user) {
 			throw new MWException('Could not create user with username:' . $username);
