@@ -92,27 +92,31 @@ class SpecialOAuth2Client extends SpecialPage {
 	}
 
 	private function _handleCallback(){
+		global $wgRequest;
+
 		try {
+			$storedState = $wgRequest->getSession()->get('oauth2state');
+			// Enforce the `state` parameter to prevent clickjacking/CSRF
+			if(isset($storedState) && $storedState != $_GET['state']) {
+				if(isset($_GET['state'])) {
+					throw new UnexpectedValueException("State parameter of callback does not match original state");
+				} else {
+					throw new UnexpectedValueException("Required state parameter missing");
+				}
+			}
 
 			// Try to get an access token using the authorization code grant.
 			$accessToken = $this->_provider->getAccessToken('authorization_code', [
 				'code' => $_GET['code']
 			]);
 		} catch (\League\OAuth2\Client\Provider\Exception\IdentityProviderException $e) {
-
-			// Failed to get the access token or user details.
+			exit($e->getMessage()); // Failed to get the access token or user details.
+		} catch (UnexpectedValueException $e) {
 			exit($e->getMessage());
-
 		}
 
 		$resourceOwner = $this->_provider->getResourceOwner($accessToken);
 		$user = $this->_userHandling( $resourceOwner->toArray() );
-		if ( is_null( $user ) ) {
-						$title = Title::newMainPage();
-						global $wgOut;
-						$wgOut->redirect( $title->getFullURL() );
-						return false;
-		}
 		$user->setCookies();
 
 		global $wgOut, $wgRequest;
@@ -124,7 +128,7 @@ class SpecialOAuth2Client extends SpecialPage {
 			$wgRequest->getSession()->save();
 		}
 
-		if( !$title instanceof Title || 0 > $title->mArticleID ) {
+		if( !$title instanceof Title || 0 > $title->getArticleID() ) {
 			$title = Title::newMainPage();
 		}
 		$wgOut->redirect( $title->getFullURL() );
@@ -132,13 +136,15 @@ class SpecialOAuth2Client extends SpecialPage {
 	}
 
 	private function _default(){
-		global $wgOAuth2Client, $wgOut, $wgUser, $wgScriptPath, $wgExtensionAssetsPath;
+		global $wgOAuth2Client, $wgOut, $wgScriptPath, $wgExtensionAssetsPath;
+
 		$service_name = ( isset( $wgOAuth2Client['configuration']['service_name'] ) && 0 < strlen( $wgOAuth2Client['configuration']['service_name'] ) ? $wgOAuth2Client['configuration']['service_name'] : 'OAuth2' );
 
 		$wgOut->setPagetitle( wfMessage( 'oauth2client-login-header', $service_name)->text() );
-		if ( !$wgUser->isLoggedIn() ) {
+		$user = RequestContext::getMain()->getUser();
+		if ( !$user->isRegistered() ) {
 			$wgOut->addWikiMsg( 'oauth2client-you-can-login-to-this-wiki-with-oauth2', $service_name );
-			$wgOut->addWikiMsg( 'oauth2client-login-with-oauth2', $this->getTitle( 'redirect' )->getPrefixedURL(), $service_name );
+			$wgOut->addWikiMsg( 'oauth2client-login-with-oauth2', $this->getPageTitle( 'redirect' )->getPrefixedURL(), $service_name );
 
 		} else {
 			$wgOut->addWikiMsg( 'oauth2client-youre-already-loggedin' );
@@ -146,22 +152,31 @@ class SpecialOAuth2Client extends SpecialPage {
 		return true;
 	}
 
+	/**
+	 * Optional callback settings in global $wgOAuth2Client
+	 *
+	 * Provide a callback and error message in the configuration that evaluates
+	 * a conditional based upon the result of some business logic provided by
+	 * the authorization endpoint response.
+	 * $wgOAuth2Client['configuration']['authz_callback']
+	 * $wgOAuth2Client['configuration']['authz_failure_message']
+	 */
 	protected function _userHandling( $response ) {
 		global $wgOAuth2Client, $wgAuth, $wgRequest;
 
-		$username = JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['username']);
-		$email =  JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['email']);
-
-		$allowed_domains = ( isset( $wgOAuth2Client['configuration']['allowed_domains'] ) ? $wgOAuth2Client['configuration']['allowed_domains'] : null );
-		if ( sizeof( $allowed_domains ) > 0 ) {
-						// Domain whitelist configured, make sure the requesting user is one of the provided domains.
-						$domain_name = substr( strrchr( $email, '@' ), 1);
-						if ( !in_array( $domain_name, $allowed_domains ) ) {
-										// Valid account, but not whitelisted.
-							return null;
-						}
+		if (
+			isset($wgOAuth2Client['configuration']['authz_callback'])
+			&& false === $wgOAuth2Client['configuration']['authz_callback']($response)
+		) {
+			$callback_failure_message = isset($wgOAuth2Client['configuration']['authz_failure_message'])
+				? $wgOAuth2Client['configuration']['authz_failure_message']
+				: 'Not authorized';
+			throw new MWException($callback_failure_message);
 		}
 
+		$username = JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['username']);
+		$email =  JsonHelper::extractValue($response, $wgOAuth2Client['configuration']['email']);
+		Hooks::run("OAuth2ClientBeforeUserSave", [&$username, &$email, $response]);
 		$user = User::newFromName($username, 'creatable');
 		if (!$user) {
 			throw new MWException('Could not create user with username:' . $username);
@@ -184,8 +199,7 @@ class SpecialOAuth2Client extends SpecialPage {
 		$user->setCookies();
 		$this->getContext()->setUser( $user );
 		$user->saveSettings();
-		global $wgUser;
-		$wgUser = $user;
+		RequestContext::getMain()->setUser( $user );
 		$sessionUser = User::newFromSession($this->getRequest());
 		$sessionUser->load();
 		return $user;
